@@ -11,6 +11,12 @@ type Config struct {
 	// Used to construct certificate filenames: {ServiceName}-to-service-authz.cert.pem
 	ServiceName string
 
+	// InstanceID is the unique identity of this service instance (e.g., "deployment-agent-staging-001")
+	// This is validated by service-authz against the mTLS cert CN (must start with ServiceName)
+	// See ADR-036: Identity Validation Architecture (Wege und Schlagbäume)
+	// If empty, reads from SERVICE_INSTANCE_ID environment variable
+	InstanceID string
+
 	// ServiceAuthzURL is the full URL to service-authz (e.g., "https://localhost:8400")
 	// No defaults - must be explicitly configured!
 	ServiceAuthzURL string
@@ -46,7 +52,20 @@ func (c *Config) Validate() error {
 	if c.Environment == "" {
 		return fmt.Errorf("authz-client: Environment is required")
 	}
+	// InstanceID must be set either in config or via SERVICE_INSTANCE_ID env var
+	if c.GetInstanceID() == "" {
+		return fmt.Errorf("authz-client: InstanceID is required (set in config or SERVICE_INSTANCE_ID env var)")
+	}
 	return nil
+}
+
+// GetInstanceID returns the instance ID (from config or SERVICE_INSTANCE_ID env var)
+// This is the unique identity used in JWT subject claims
+func (c *Config) GetInstanceID() string {
+	if c.InstanceID != "" {
+		return c.InstanceID
+	}
+	return os.Getenv("SERVICE_INSTANCE_ID")
 }
 
 // CertFile returns the path to the client certificate

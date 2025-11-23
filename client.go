@@ -120,6 +120,7 @@ func (c *Client) GetTokenWithContext(targetService string, scopes []string, call
 	}
 
 	reqBody := TokenRequest{
+		InstanceID:    c.config.GetInstanceID(),
 		TargetService: targetService,
 		Scopes:        scopes,
 		Environment:   c.config.Environment,
