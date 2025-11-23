@@ -1,3 +1,3 @@
-module github.com/eu-native-platform/libraries/go/authz-client
+module github.com/st-keller/authz-client
 
 go 1.25
