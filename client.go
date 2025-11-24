@@ -42,10 +42,15 @@ type Client struct {
 	config     Config
 	httpClient *http.Client
 
-	// Token cache (thread-safe)
-	mu          sync.RWMutex
-	cachedToken string
-	tokenExpiry time.Time
+	// Token cache per target service (thread-safe)
+	mu         sync.RWMutex
+	tokenCache map[string]tokenCacheEntry // key = targetService
+}
+
+// tokenCacheEntry holds a cached token for a specific target service
+type tokenCacheEntry struct {
+	token  string
+	expiry time.Time
 }
 
 // New creates a new authz-client for service-authz.
@@ -85,6 +90,7 @@ func New(config Config) (*Client, error) {
 				TLSClientConfig: tlsConfig,
 			},
 		},
+		tokenCache: make(map[string]tokenCacheEntry),
 	}, nil
 }
 
@@ -105,12 +111,13 @@ func (c *Client) GetToken(targetService string, scopes []string) (string, error)
 func (c *Client) GetTokenWithContext(targetService string, scopes []string, callContext map[string]interface{}) (string, error) {
 	renewalBuffer := time.Duration(c.config.GetRenewalBufferSeconds()) * time.Second
 
-	// Check if cached token is still valid (with renewal buffer)
+	// Check if cached token for this target service is still valid (with renewal buffer)
 	c.mu.RLock()
-	if c.cachedToken != "" && time.Now().Before(c.tokenExpiry.Add(-renewalBuffer)) {
-		token := c.cachedToken
-		c.mu.RUnlock()
-		return token, nil
+	if entry, ok := c.tokenCache[targetService]; ok {
+		if time.Now().Before(entry.expiry.Add(-renewalBuffer)) {
+			c.mu.RUnlock()
+			return entry.token, nil
+		}
 	}
 	c.mu.RUnlock()
 
@@ -150,36 +157,42 @@ func (c *Client) GetTokenWithContext(targetService string, scopes []string, call
 		return "", fmt.Errorf("authz-client: failed to decode token response: %w", err)
 	}
 
-	// Cache token
+	// Cache token for this target service
 	c.mu.Lock()
-	c.cachedToken = tokenResp.Token
-	c.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	c.tokenCache[targetService] = tokenCacheEntry{
+		token:  tokenResp.Token,
+		expiry: time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
+	}
 	c.mu.Unlock()
 
 	return tokenResp.Token, nil
 }
 
-// InvalidateToken clears the cached token.
+// InvalidateToken clears all cached tokens.
 // Call this after receiving a 401 Unauthorized response to force a token refresh.
 func (c *Client) InvalidateToken() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	c.cachedToken = ""
-	c.tokenExpiry = time.Time{}
+	c.tokenCache = make(map[string]tokenCacheEntry)
 }
 
-// TokenExpiry returns the expiry time of the cached token.
-// Returns zero time if no token is cached.
-func (c *Client) TokenExpiry() time.Time {
+// TokenExpiry returns the expiry time of the cached token for a target service.
+// Returns zero time if no token is cached for that service.
+func (c *Client) TokenExpiry(targetService string) time.Time {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.tokenExpiry
+	if entry, ok := c.tokenCache[targetService]; ok {
+		return entry.expiry
+	}
+	return time.Time{}
 }
 
-// HasValidToken returns true if a valid (non-expired) token is cached.
-func (c *Client) HasValidToken() bool {
+// HasValidToken returns true if a valid (non-expired) token is cached for a target service.
+func (c *Client) HasValidToken(targetService string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.cachedToken != "" && time.Now().Before(c.tokenExpiry)
+	if entry, ok := c.tokenCache[targetService]; ok {
+		return time.Now().Before(entry.expiry)
+	}
+	return false
 }
